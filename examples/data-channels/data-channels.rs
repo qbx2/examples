@@ -2,12 +2,14 @@ use anyhow::Result;
 use clap::{App, AppSettings, Arg};
 use std::io::Write;
 use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Duration;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::APIBuilder;
+use webrtc::api::{API, APIBuilder};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -108,7 +110,7 @@ async fn main() -> Result<()> {
                 // Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
                 // Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
                 println!("Peer Connection has gone to failed exiting");
-                let _ = done_tx.try_send(());
+                // let _ = done_tx.try_send(());
             }
 
             Box::pin(async {})
@@ -158,9 +160,11 @@ async fn main() -> Result<()> {
         .await;
 
     // Wait for the offer to be pasted
-    let line = signal::must_read_stdin()?;
-    let desc_data = signal::decode(line.as_str())?;
-    let offer = serde_json::from_str::<RTCSessionDescription>(&desc_data)?;
+    let offer = serde_json::from_value(serde_json::json!({
+            "type": "offer",
+            "sdp": "v=0\r\no=- 5340727823215260889 1636897623 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\na=fingerprint:sha-256 B7:D9:04:8D:52:B2:F5:46:BA:9F:EB:AC:E0:62:65:D3:71:E1:2B:13:1B:ED:87:8D:E5:1D:60:8A:4A:27:4F:C5\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=setup:actpass\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=ice-ufrag:PCrxmuHcaZphIFEj\r\na=ice-pwd:JNlJxHWYGduaIDcAZpkrghAcDDuzrxqD\r\n".to_string(),
+        }))
+        .unwrap();
 
     // Set the remote SessionDescription
     peer_connection.set_remote_description(offer).await?;
@@ -168,16 +172,17 @@ async fn main() -> Result<()> {
     // Create an answer
     let answer = peer_connection.create_answer(None).await?;
 
-    // Create channel that is blocked until ICE Gathering is complete
-    let mut gather_complete = peer_connection.gathering_complete_promise().await;
-
     // Sets the LocalDescription, and starts our UDP listeners
     peer_connection.set_local_description(answer).await?;
 
-    // Block until ICE Gathering is complete, disabling trickle ICE
-    // we do this because we only can exchange one signaling message
-    // in a production application you should exchange ICE Candidates via OnICECandidate
-    let _ = gather_complete.recv().await;
+    let candidate = "candidate:422338508 1 udp 2130706431 1.2.3.4 61411 typ host".to_string();
+
+    peer_connection.add_ice_candidate(RTCIceCandidateInit {
+        candidate,
+        sdp_mid: "".to_string(),
+        sdp_mline_index: 0,
+        ..Default::default()
+    }).await.unwrap();
 
     // Output the answer in base64 so we can paste it in browser
     if let Some(local_desc) = peer_connection.local_description().await {
